@@ -152,7 +152,7 @@ jobs:
       - name: Download DAST
         uses: actions/download-artifact@v4
         with:
-          name: dast-report
+          name: zap_scan
           path: ./reports/dast
 
       - name: Download SCA
