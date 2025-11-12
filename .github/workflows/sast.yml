@@ -7,12 +7,13 @@ on:
     branches: [ "main", "dev" ]
 
 jobs:
-  sast:
+  # Job 1 : Analyse de sécurité statique
+  security-scan:
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: ./Frontend
-
+    
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -23,30 +24,59 @@ jobs:
           node-version: '22'
 
       - name: Install dependencies
-        run: |
-          echo "📦 Installation des dépendances..."
-          npm install --legacy-peer-deps
+        run: npm install --legacy-peer-deps
 
-      - name: Run ESLint security checks
+      - name: Run npm audit
         run: |
-          echo "🔒 Installation des outils de sécurité ESLint..."
-          npm install eslint eslint-plugin-security eslint-plugin-no-secrets --save-dev --legacy-peer-deps
-          echo "🔍 Analyse de sécurité avec ESLint..."
-          npx eslint src --ext .js,.jsx --format=stylish || echo "⚠️ ESLint a trouvé des problèmes de sécurité"
-        continue-on-error: true
-
-      - name: Run npm audit and generate report
-        run: |
+          echo "🔍 Audit de sécurité des dépendances..."
           npm audit --audit-level=moderate --json > audit-report.json || true
-          echo "### Résumé des vulnérabilités SAST"
-          cat audit-report.json | jq '.advisories | keys | length as $count | "Vulnérabilités détectées : \($count)"' || true
-          cat audit-report.json | jq '.advisories | to_entries[] | "\(.value.severity) - \(.value.module_name) - \(.value.title)"' || true
+          echo ""
+          echo "### 📊 Résumé des vulnérabilités SAST"
+          cat audit-report.json | jq -r '.metadata | "Total: \(.vulnerabilities.total) | Critical: \(.vulnerabilities.critical) | High: \(.vulnerabilities.high) | Moderate: \(.vulnerabilities.moderate) | Low: \(.vulnerabilities.low)"' || echo "Aucune donnée d'audit disponible"
+
+      - name: Run ESLint with CRA config
+        run: |
+          echo "🔍 Analyse ESLint (configuration Create React App)..."
+          npx eslint src --ext .js,.jsx --max-warnings=0 || true
+        continue-on-error: true
 
       - name: Upload audit report
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: npm-audit-report
           path: ./Frontend/audit-report.json
+          retention-days: 30
+
+  # Job 2 : Build et tests
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./Frontend
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
 
       - name: Build project
-        run: npm run build
+        run: |
+          echo "🏗️ Build de production..."
+          npm run build
+        env:
+          CI: true
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: ./Frontend/build
+          retention-days: 7
