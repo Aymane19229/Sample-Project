@@ -2,16 +2,16 @@ name: Full Security Pipeline (SAST + DAST + SCA)
 
 on:
   push:
-    branches: ["main", "dev"]
+    branches: [ "main", "dev" ]
   pull_request:
-    branches: ["main", "dev"]
+    branches: [ "main", "dev" ]
 
 jobs:
-  # -----------------------------
-  # Job 1 : SAST
-  # -----------------------------
+  # -------------------------
+  # Job SAST
+  # -------------------------
   sast:
-    name: Static Application Security Test
+    name: Run SAST (npm audit + ESLint)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -28,23 +28,65 @@ jobs:
       - name: Install dependencies
         run: npm install --legacy-peer-deps
 
-      - name: Run npm audit for SAST
+      - name: Run npm audit (SAST)
         run: |
-          echo "🔍 Running SAST..."
-          npm audit --json > sast-report.json || true
+          npm audit --audit-level=moderate --json > sast-report.json || true
+
+      - name: Run ESLint
+        run: npx eslint src --ext .js,.jsx --max-warnings=0 || true
 
       - name: Upload SAST report
         uses: actions/upload-artifact@v4
         with:
           name: sast-report
           path: ./Frontend/sast-report.json
-          retention-days: 30
+          retention-days: 15
 
-  # -----------------------------
-  # Job 2 : Build + DAST
-  # -----------------------------
+  # -------------------------
+  # Job DAST
+  # -------------------------
   dast:
-    name: Dynamic Application Security Test
+    name: Run DAST (OWASP ZAP)
+    runs-on: ubuntu-latest
+    needs: sast
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '16'
+
+      - name: Install dependencies & build frontend
+        run: |
+          cd Frontend
+          npm install --legacy-peer-deps
+          npm run build
+          npx serve -s build -l 5000 &
+          sleep 10
+        env:
+          CI: true
+
+      - name: Run OWASP ZAP Full Scan
+        uses: zaproxy/action-full-scan@v0.13.0
+        with:
+          target: "http://localhost:5000"
+          cmd_options: "-a"
+          allow_issue_writing: false
+
+      - name: Upload DAST report
+        uses: actions/upload-artifact@v4
+        with:
+          name: dast-report
+          path: ./zap-report.html
+          retention-days: 15
+
+  # -------------------------
+  # Job SCA
+  # -------------------------
+  sca:
+    name: Run SCA (npm audit)
     runs-on: ubuntu-latest
     needs: sast
     defaults:
@@ -60,107 +102,58 @@ jobs:
           node-version: '16'
 
       - name: Install dependencies
-        run: npm install --legacy-peer-deps
+        run: npm ci --legacy-peer-deps
 
-      - name: Build project
-        run: npm run build
-        env:
-          CI: true
-
-      - name: Serve project locally
-        run: npx serve -s build -l 5000 &
-      
-      - name: Wait for server to start
-        run: sleep 10
-
-      - name: Run OWASP ZAP Full Scan
-        uses: zaproxy/action-full-scan@v0.13.0
-        with:
-          target: "http://localhost:5000"
-          cmd_options: "-a"
-          allow_issue_writing: false
-
-      - name: Upload DAST report
-        uses: actions/upload-artifact@v4
-        with:
-          name: dast-report
-          path: ./Frontend/zap-report.html
-          retention-days: 30
-
-  # -----------------------------
-  # Job 3 : SCA
-  # -----------------------------
-  sca:
-    name: Software Composition Analysis
-    runs-on: ubuntu-latest
-    needs: [sast]
-    defaults:
-      run:
-        working-directory: ./Frontend
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '16'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run npm audit for SCA
-        run: |
-          echo "📦 Running SCA..."
-          npm audit --json > sca-report.json || true
+      - name: Run npm audit (SCA)
+        run: npm audit --json > sca-report.json || true
 
       - name: Upload SCA report
         uses: actions/upload-artifact@v4
         with:
           name: sca-report
           path: ./Frontend/sca-report.json
-          retention-days: 30
+          retention-days: 15
 
-  # -----------------------------
-  # Job 4 : Aggregate Report
-  # -----------------------------
+  # -------------------------
+  # Job Report Global
+  # -------------------------
   aggregate-report:
-    name: Aggregate Security Report
+    name: Generate Aggregate Security Report
     runs-on: ubuntu-latest
     needs: [sast, dast, sca]
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Download individual reports
+      - name: Download SAST report
         uses: actions/download-artifact@v4
         with:
           name: sast-report
-          path: ./reports
-      - uses: actions/download-artifact@v4
+          path: ./reports/sast
+
+      - name: Download DAST report
+        uses: actions/download-artifact@v4
         with:
           name: dast-report
-          path: ./reports
-      - uses: actions/download-artifact@v4
+          path: ./reports/dast
+
+      - name: Download SCA report
+        uses: actions/download-artifact@v4
         with:
           name: sca-report
-          path: ./reports
+          path: ./reports/sca
 
-      - name: Generate aggregate report
+      - name: Generate combined HTML report
         run: |
-          echo "📊 Generating aggregate report..."
           mkdir -p ./reports/aggregate
           echo "<h1>Aggregate Security Report</h1>" > ./reports/aggregate/index.html
           echo "<h2>SAST Report</h2>" >> ./reports/aggregate/index.html
-          cat ./reports/sast-report.json | jq '.' >> ./reports/aggregate/index.html
+          cat ./reports/sast/sast-report.json | jq '.' >> ./reports/aggregate/index.html
           echo "<h2>DAST Report</h2>" >> ./reports/aggregate/index.html
-          cat ./reports/zap-report.html >> ./reports/aggregate/index.html
+          cat ./reports/dast/zap-report.html >> ./reports/aggregate/index.html
           echo "<h2>SCA Report</h2>" >> ./reports/aggregate/index.html
-          cat ./reports/sca-report.json | jq '.' >> ./reports/aggregate/index.html
+          cat ./reports/sca/sca-report.json | jq '.' >> ./reports/aggregate/index.html
 
-      - name: Upload aggregate report
+      - name: Upload Aggregate Report
         uses: actions/upload-artifact@v4
         with:
           name: aggregate-report
           path: ./reports/aggregate/index.html
-          retention-days: 30
+          retention-days: 15
