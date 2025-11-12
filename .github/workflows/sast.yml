@@ -1,4 +1,4 @@
-name: React SAST Pipeline
+name: React SAST & Build Pipeline
 
 on:
   push:
@@ -13,7 +13,7 @@ jobs:
     defaults:
       run:
         working-directory: ./Frontend
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -21,7 +21,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'  # Node 18 LTS pour compatibilité
+          node-version: '16'  # Node 16 LTS pour compatibilité CRA
 
       - name: Install dependencies
         run: npm install --legacy-peer-deps
@@ -34,9 +34,9 @@ jobs:
           echo "### 📊 Résumé des vulnérabilités SAST"
           cat audit-report.json | jq -r '.metadata | "Total: \(.vulnerabilities.total) | Critical: \(.vulnerabilities.critical) | High: \(.vulnerabilities.high) | Moderate: \(.vulnerabilities.moderate) | Low: \(.vulnerabilities.low)"' || echo "Aucune donnée d'audit disponible"
 
-      - name: Run ESLint with CRA config
+      - name: Run ESLint
         run: |
-          echo "🔍 Analyse ESLint (configuration Create React App)..."
+          echo "🔍 Analyse ESLint (CRA)..."
           npx eslint src --ext .js,.jsx --max-warnings=0 || true
         continue-on-error: true
 
@@ -48,13 +48,13 @@ jobs:
           path: ./Frontend/audit-report.json
           retention-days: 30
 
-  # Job 2 : Build et tests
+  # Job 2 : Build du projet
   build:
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: ./Frontend
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -62,7 +62,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'  # Node 18 LTS pour compatibilité
+          node-version: '16'
 
       - name: Install dependencies
         run: npm install --legacy-peer-deps
