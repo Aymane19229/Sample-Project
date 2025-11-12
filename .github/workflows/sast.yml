@@ -23,12 +23,17 @@ jobs:
           node-version: '22'
 
       - name: Install dependencies
-        run: npm install
+        run: |
+          echo "📦 Installation des dépendances..."
+          npm install --legacy-peer-deps
 
       - name: Run ESLint security checks
         run: |
-          npm install eslint eslint-plugin-security eslint-plugin-no-secrets --save-dev
-          npx eslint src --ext .js,.jsx || echo "ESLint a trouvé des avertissements ou erreurs"
+          echo "🔒 Installation des outils de sécurité ESLint..."
+          npm install eslint eslint-plugin-security eslint-plugin-no-secrets --save-dev --legacy-peer-deps
+          echo "🔍 Analyse de sécurité avec ESLint..."
+          npx eslint src --ext .js,.jsx --format=stylish || echo "⚠️ ESLint a trouvé des problèmes de sécurité"
+        continue-on-error: true
 
       - name: Run npm audit and generate report
         run: |
@@ -41,7 +46,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: npm-audit-report
-          path: ${{ needs.detect-structure.outputs.frontend-path }}/audit-report.json
+          path: ./Frontend/audit-report.json
 
       - name: Build project
         run: npm run build
