@@ -1,0 +1,42 @@
+name: React SAST Pipeline
+
+on:
+  push:
+    branches: [ "dev" ]
+  pull_request:
+    branches: [ "dev" ]
+
+jobs:
+  sast:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '22.x'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run ESLint security checks
+        run: npx eslint src --ext .js,.jsx
+
+      - name: Run npm audit and show summary
+        run: |
+          npm audit --json > audit-report.json
+          echo "### Résumé des vulnérabilités SAST"
+          cat audit-report.json | jq '.advisories | keys | length as $count | "Vulnérabilités détectées : \($count)"'
+          cat audit-report.json | jq '.advisories | to_entries[] | "\(.value.severity) - \(.value.module_name) - \(.value.title)"'
+
+      - name: Upload audit report
+        uses: actions/upload-artifact@v3
+        with:
+          name: npm-audit-report
+          path: audit-report.json
+
+      - name: Build project
+        run: npm run build
