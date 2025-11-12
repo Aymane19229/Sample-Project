@@ -1,9 +1,7 @@
 import React , {Component} from "react";
-import DatePicker from "react-datepicker";
 import "react-datepicker/dist/react-datepicker.css";
 //import UserService from "../services/UserService";
 import axios from "axios";
-import ReactTable from "react-table";  
 
 export default class Register extends Component {
     
