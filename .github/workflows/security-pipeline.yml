@@ -1,4 +1,4 @@
-name: Full Security Pipeline (SAST + DAST + SCA)
+name: Full Security Pipeline
 
 on:
   push:
@@ -7,15 +7,16 @@ on:
     branches: [ "main", "dev" ]
 
 jobs:
-  # -------------------------
+  # =========================
   # Job SAST
-  # -------------------------
+  # =========================
   sast:
-    name: Run SAST (npm audit + ESLint)
+    name: Static Analysis (SAST)
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: ./Frontend
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -30,25 +31,34 @@ jobs:
 
       - name: Run npm audit (SAST)
         run: |
-          npm audit --audit-level=moderate --json > sast-report.json || true
+          npm audit --audit-level=moderate --json > audit-report.json || true
 
       - name: Run ESLint
-        run: npx eslint src --ext .js,.jsx --max-warnings=0 || true
+        run: |
+          npx eslint src --ext .js,.jsx -f json -o eslint-report.json || true
 
-      - name: Upload SAST report
+      - name: Upload SAST npm audit report
         uses: actions/upload-artifact@v4
         with:
-          name: sast-report
-          path: ./Frontend/sast-report.json
-          retention-days: 15
+          name: sast-npm-audit
+          path: ./Frontend/audit-report.json
+          retention-days: 30
 
-  # -------------------------
+      - name: Upload SAST ESLint report
+        uses: actions/upload-artifact@v4
+        with:
+          name: sast-eslint
+          path: ./Frontend/eslint-report.json
+          retention-days: 30
+
+  # =========================
   # Job DAST
-  # -------------------------
+  # =========================
   dast:
-    name: Run DAST (OWASP ZAP)
+    name: Dynamic Analysis (DAST)
     runs-on: ubuntu-latest
-    needs: sast
+    needs: sast  # peut attendre SAST, facultatif
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -58,9 +68,9 @@ jobs:
         with:
           node-version: '16'
 
-      - name: Install dependencies & build frontend
+      - name: Build and serve frontend
+        working-directory: ./Frontend
         run: |
-          cd Frontend
           npm install --legacy-peer-deps
           npm run build
           npx serve -s build -l 5000 &
@@ -80,18 +90,18 @@ jobs:
         with:
           name: dast-report
           path: ./zap-report.html
-          retention-days: 15
+          retention-days: 30
 
-  # -------------------------
+  # =========================
   # Job SCA
-  # -------------------------
+  # =========================
   sca:
-    name: Run SCA (npm audit)
+    name: Software Composition Analysis (SCA)
     runs-on: ubuntu-latest
-    needs: sast
     defaults:
       run:
         working-directory: ./Frontend
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -102,58 +112,68 @@ jobs:
           node-version: '16'
 
       - name: Install dependencies
-        run: npm ci --legacy-peer-deps
+        run: npm install --legacy-peer-deps
 
       - name: Run npm audit (SCA)
-        run: npm audit --json > sca-report.json || true
+        run: |
+          npm audit --json > sca-report.json || true
 
       - name: Upload SCA report
         uses: actions/upload-artifact@v4
         with:
           name: sca-report
           path: ./Frontend/sca-report.json
-          retention-days: 15
+          retention-days: 30
 
-  # -------------------------
-  # Job Report Global
-  # -------------------------
+  # =========================
+  # Job Global Report
+  # =========================
   aggregate-report:
-    name: Generate Aggregate Security Report
+    name: Aggregate Security Report
     runs-on: ubuntu-latest
-    needs: [sast, dast, sca]
+    needs: [sast, dast, sca]  # attend que tous les jobs soient terminés
+
     steps:
-      - name: Download SAST report
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download SAST npm audit
         uses: actions/download-artifact@v4
         with:
-          name: sast-report
+          name: sast-npm-audit
           path: ./reports/sast
 
-      - name: Download DAST report
+      - name: Download SAST ESLint
+        uses: actions/download-artifact@v4
+        with:
+          name: sast-eslint
+          path: ./reports/sast
+
+      - name: Download DAST
         uses: actions/download-artifact@v4
         with:
           name: dast-report
           path: ./reports/dast
 
-      - name: Download SCA report
+      - name: Download SCA
         uses: actions/download-artifact@v4
         with:
           name: sca-report
           path: ./reports/sca
 
-      - name: Generate combined HTML report
+      - name: Merge reports into global JSON
         run: |
-          mkdir -p ./reports/aggregate
-          echo "<h1>Aggregate Security Report</h1>" > ./reports/aggregate/index.html
-          echo "<h2>SAST Report</h2>" >> ./reports/aggregate/index.html
-          cat ./reports/sast/sast-report.json | jq '.' >> ./reports/aggregate/index.html
-          echo "<h2>DAST Report</h2>" >> ./reports/aggregate/index.html
-          cat ./reports/dast/zap-report.html >> ./reports/aggregate/index.html
-          echo "<h2>SCA Report</h2>" >> ./reports/aggregate/index.html
-          cat ./reports/sca/sca-report.json | jq '.' >> ./reports/aggregate/index.html
+          mkdir -p reports/global
+          jq -s '{sast_npm_audit: .[0], sast_eslint: .[1], dast: .[2], sca: .[3]}' \
+            ./reports/sast/audit-report.json \
+            ./reports/sast/eslint-report.json \
+            ./reports/dast/zap-report.html \
+            ./reports/sca/sca-report.json \
+            > ./reports/global/global-report.json
 
-      - name: Upload Aggregate Report
+      - name: Upload Global Report
         uses: actions/upload-artifact@v4
         with:
-          name: aggregate-report
-          path: ./reports/aggregate/index.html
-          retention-days: 15
+          name: global-security-report
+          path: ./reports/global/global-report.json
+          retention-days: 30
