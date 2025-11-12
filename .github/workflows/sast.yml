@@ -7,40 +7,11 @@ on:
     branches: [ "main", "dev" ]
 
 jobs:
-  detect-structure:
-    runs-on: ubuntu-latest
-    outputs:
-      frontend-path: ${{ steps.find-package.outputs.path }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      
-      - name: Find package.json location
-        id: find-package
-        run: |
-          echo "=== Searching for package.json ==="
-          find . -name "package.json" -type f
-          
-          # Détecte automatiquement le chemin
-          if [ -f "./package.json" ]; then
-            echo "path=." >> $GITHUB_OUTPUT
-          elif [ -f "./frontend/package.json" ]; then
-            echo "path=./frontend" >> $GITHUB_OUTPUT
-          elif [ -f "./client/package.json" ]; then
-            echo "path=./client" >> $GITHUB_OUTPUT
-          elif [ -f "./app/package.json" ]; then
-            echo "path=./app" >> $GITHUB_OUTPUT
-          else
-            echo "❌ package.json not found!"
-            exit 1
-          fi
-
   sast:
-    needs: detect-structure
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: ${{ needs.detect-structure.outputs.frontend-path }}
+        working-directory: ./Frontend
 
     steps:
       - name: Checkout repository
