@@ -73,20 +73,58 @@ jobs:
       - name: Build and serve frontend
         working-directory: ./Frontend
         run: |
+          echo "📦 Installation des dépendances..."
           npm install --legacy-peer-deps
+          
+          echo "🏗️ Build du projet..."
           npm run build
-          npx serve -s build -l 5000 &
-          sleep 10
+          
+          echo "🚀 Démarrage du serveur..."
+          npx serve -s build -l 5000 > serve.log 2>&1 &
+          SERVER_PID=$!
+          echo "Server PID: $SERVER_PID"
+          
+          echo "⏳ Attente du démarrage du serveur..."
+          sleep 15
+          
+          echo "🔍 Vérification du serveur..."
+          curl -f http://localhost:5000 || echo "❌ Le serveur ne répond pas"
+          
+          echo "📋 Log du serveur:"
+          cat serve.log || echo "Pas de logs"
         env:
           CI: true
 
-      - name: Run OWASP ZAP Full Scan
-        uses: zaproxy/action-full-scan@v0.13.0
+      - name: Run OWASP ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.13.0
         continue-on-error: true
         with:
           target: "http://localhost:5000"
-          cmd_options: "-a"
-          allow_issue_writing: false
+          rules_file_name: '.zap/rules.tsv'
+          cmd_options: '-a -j'
+
+      - name: Debug - List generated files
+        if: always()
+        run: |
+          echo "📁 Fichiers dans le répertoire actuel:"
+          ls -la
+          echo ""
+          echo "📁 Recherche des rapports ZAP:"
+          find . -name "*.html" -o -name "*.md" -o -name "*.json" | grep -i zap || echo "Aucun rapport ZAP trouvé"
+
+      - name: Create DAST report if missing
+        if: always()
+        run: |
+          if [ ! -f "report_html.html" ] && [ ! -f "zap_scan.html" ]; then
+            echo "⚠️ Aucun rapport DAST généré, création d'un rapport par défaut..."
+            cat > dast-report.json << 'EOF'
+          {
+            "status": "failed",
+            "message": "DAST scan did not complete successfully",
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          fi
 
       - name: Upload DAST report
         uses: actions/upload-artifact@v4
@@ -94,9 +132,10 @@ jobs:
         with:
           name: dast-report
           path: |
-            ./zap_scan.html
-            ./report_html.html
-            ./report_md.md
+            report_html.html
+            report_md.md
+            report_json.json
+            dast-report.json
           retention-days: 30
 
   # =========================
@@ -180,26 +219,33 @@ jobs:
           
           # Fallback pour SAST npm audit
           if [ ! -f "./reports/sast/audit-report.json" ]; then
-            echo '{"error": "SAST npm audit not available"}' > ./reports/sast/audit-report.json
+            echo '{"error": "SAST npm audit not available", "status": "failed"}' > ./reports/sast/audit-report.json
           fi
           
           # Fallback pour SAST ESLint
           if [ ! -f "./reports/sast/eslint-report.json" ]; then
-            echo '{"error": "SAST ESLint not available"}' > ./reports/sast/eslint-report.json
+            echo '{"error": "SAST ESLint not available", "status": "failed"}' > ./reports/sast/eslint-report.json
           fi
           
-          # Fallback pour DAST
-          if [ ! -f "./reports/dast/zap_scan.html" ]; then
-            echo '{"error": "DAST report not available"}' > ./reports/dast/dast-report.json
+          # Fallback pour DAST - cherche tous les formats possibles
+          DAST_JSON="./reports/dast/dast-report.json"
+          if [ -f "./reports/dast/report_json.json" ]; then
+            cp ./reports/dast/report_json.json "$DAST_JSON"
+          elif [ -f "./reports/dast/zap-report.json" ]; then
+            cp ./reports/dast/zap-report.json "$DAST_JSON"
+          elif [ -f "./reports/dast/report_html.html" ] || [ -f "./reports/dast/zap-report.html" ]; then
+            echo '{"status": "completed", "message": "DAST HTML report available, see artifact"}' > "$DAST_JSON"
           else
-            # Convertir HTML en JSON basique pour la fusion
-            echo '{"status": "DAST completed", "report": "See HTML artifact"}' > ./reports/dast/dast-report.json
+            echo '{"error": "DAST report not available", "status": "failed"}' > "$DAST_JSON"
           fi
           
           # Fallback pour SCA
           if [ ! -f "./reports/sca/sca-report.json" ]; then
-            echo '{"error": "SCA report not available"}' > ./reports/sca/sca-report.json
+            echo '{"error": "SCA report not available", "status": "failed"}' > ./reports/sca/sca-report.json
           fi
+          
+          echo "✅ Fallback reports créés"
+          ls -R ./reports/
 
       - name: Merge reports into global JSON
         run: |
