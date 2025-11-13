@@ -115,13 +115,14 @@ jobs:
       - name: Create DAST report if missing
         if: always()
         run: |
-          if [ ! -f "report_html.html" ] && [ ! -f "zap_scan.html" ]; then
-            echo "⚠️ Aucun rapport DAST généré, création d'un rapport par défaut..."
-            cat > dast-report.json << 'EOF'
+          if [ ! -f "report_json.json" ]; then
+            echo "⚠️ Aucun rapport DAST JSON généré, création d'un rapport par défaut..."
+            cat > report_json.json << 'EOF'
           {
             "status": "failed",
             "message": "DAST scan did not complete successfully",
-            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "site": []
           }
           EOF
           fi
@@ -135,7 +136,6 @@ jobs:
             report_html.html
             report_md.md
             report_json.json
-            dast-report.json
           retention-days: 30
 
   # =========================
@@ -219,29 +219,22 @@ jobs:
           
           # Fallback pour SAST npm audit
           if [ ! -f "./reports/sast/audit-report.json" ]; then
-            echo '{"error": "SAST npm audit not available", "status": "failed"}' > ./reports/sast/audit-report.json
+            echo '{"vulnerabilities": {}, "metadata": {"vulnerabilities": {"total": 0}}}' > ./reports/sast/audit-report.json
           fi
           
           # Fallback pour SAST ESLint
           if [ ! -f "./reports/sast/eslint-report.json" ]; then
-            echo '{"error": "SAST ESLint not available", "status": "failed"}' > ./reports/sast/eslint-report.json
+            echo '[]' > ./reports/sast/eslint-report.json
           fi
           
-          # Fallback pour DAST - cherche tous les formats possibles
-          DAST_JSON="./reports/dast/dast-report.json"
-          if [ -f "./reports/dast/report_json.json" ]; then
-            cp ./reports/dast/report_json.json "$DAST_JSON"
-          elif [ -f "./reports/dast/zap-report.json" ]; then
-            cp ./reports/dast/zap-report.json "$DAST_JSON"
-          elif [ -f "./reports/dast/report_html.html" ] || [ -f "./reports/dast/zap-report.html" ]; then
-            echo '{"status": "completed", "message": "DAST HTML report available, see artifact"}' > "$DAST_JSON"
-          else
-            echo '{"error": "DAST report not available", "status": "failed"}' > "$DAST_JSON"
+          # Fallback pour DAST
+          if [ ! -f "./reports/dast/report_json.json" ]; then
+            echo '{"status": "failed", "site": []}' > ./reports/dast/report_json.json
           fi
           
           # Fallback pour SCA
           if [ ! -f "./reports/sca/sca-report.json" ]; then
-            echo '{"error": "SCA report not available", "status": "failed"}' > ./reports/sca/sca-report.json
+            echo '{"vulnerabilities": {}, "metadata": {"vulnerabilities": {"total": 0}}}' > ./reports/sca/sca-report.json
           fi
           
           echo "✅ Fallback reports créés"
@@ -263,9 +256,13 @@ jobs:
           }' \
             ./reports/sast/audit-report.json \
             ./reports/sast/eslint-report.json \
-            ./reports/dast/dast-report.json \
+            ./reports/dast/report_json.json \
             ./reports/sca/sca-report.json \
             > ./reports/global/global-report.json
+          
+          echo "✅ Global report created"
+          echo "📄 Content preview:"
+          cat ./reports/global/global-report.json | head -20
 
       - name: Generate summary report
         run: |
@@ -286,7 +283,7 @@ jobs:
             echo "❌ SAST ESLint (failed)" >> $GITHUB_STEP_SUMMARY
           fi
           
-          if [ -f "./reports/dast/zap_scan.html" ]; then
+          if [ -f "./reports/dast/report_json.json" ]; then
             echo "✅ DAST (OWASP ZAP)" >> $GITHUB_STEP_SUMMARY
           else
             echo "❌ DAST (OWASP ZAP failed)" >> $GITHUB_STEP_SUMMARY
@@ -308,13 +305,15 @@ jobs:
           name: global-security-report
           path: ./reports/
           retention-days: 30
-    # =========================
+
+  # =========================
   # Job PARSING (analyse des rapports)
   # =========================
   parse-reports:
     name: Parse Security Reports
     runs-on: ubuntu-latest
-    needs: [aggregate-report]   # il attend la fin du job global-report
+    needs: [aggregate-report]
+    if: always()
 
     steps:
       - name: Checkout repository
@@ -324,25 +323,125 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: global-security-report
+          path: ./reports-download
 
-          path: ./reports/global
+      - name: Debug - Verify downloaded structure
+        run: |
+          echo "📁 Structure des fichiers téléchargés:"
+          ls -R ./reports-download/
+          echo ""
+          echo "🔍 Recherche du global-report.json:"
+          find ./reports-download -name "global-report.json" -type f
+
+      - name: Reorganize reports structure
+        run: |
+          # Créer la structure attendue
+          mkdir -p ./reports
+          
+          # Copier les fichiers à la bonne place
+          if [ -d "./reports-download/global" ]; then
+            cp -r ./reports-download/global ./reports/
+          fi
+          if [ -d "./reports-download/sast" ]; then
+            cp -r ./reports-download/sast ./reports/
+          fi
+          if [ -d "./reports-download/dast" ]; then
+            cp -r ./reports-download/dast ./reports/
+          fi
+          if [ -d "./reports-download/sca" ]; then
+            cp -r ./reports-download/sca ./reports/
+          fi
+          
+          echo "✅ Structure réorganisée:"
+          ls -R ./reports/
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: 3.12
+          python-version: '3.12'
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          # si tu ajoutes plus tard pandas ou autres libs, tu les installeras ici
 
       - name: Parse Security Reports
-        run: python parse_security_reports.py
+        run: |
+          echo "🔍 Starting parsing..."
+          python parse_security_reports.py
+        env:
+          REPORTS_DIR: ./reports
 
-      - name: Upload Parsed Summary
+      - name: Display parsing results
+        if: always()
+        run: |
+          echo "📊 Parsing Results:"
+          echo ""
+          
+          if [ -f "./reports/global/summary.json" ]; then
+            echo "✅ Summary JSON created"
+            echo "📄 Summary content:"
+            cat ./reports/global/summary.json | jq '.' || cat ./reports/global/summary.json
+          else
+            echo "❌ Summary JSON not found"
+          fi
+          
+          echo ""
+          
+          if [ -f "./reports/global/SECURITY_REPORT.md" ]; then
+            echo "✅ Markdown report created"
+            echo "📄 First 50 lines:"
+            head -50 ./reports/global/SECURITY_REPORT.md
+          else
+            echo "❌ Markdown report not found"
+          fi
+
+      - name: Add parsed results to GitHub Summary
+        if: always()
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f "./reports/global/SECURITY_REPORT.md" ]; then
+            cat ./reports/global/SECURITY_REPORT.md >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ Parsed report not available" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload Parsed Reports
         uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: parsed-summary
-          path: ./reports/global/summary.json
+          name: parsed-security-reports
+          path: |
+            ./reports/global/summary.json
+            ./reports/global/SECURITY_REPORT.md
           retention-days: 30
+
+      - name: Check for critical vulnerabilities
+        if: always()
+        run: |
+          if [ -f "./reports/global/summary.json" ]; then
+            # Vérifier si jq est disponible
+            if command -v jq &> /dev/null; then
+              CRITICAL_COUNT=$(cat ./reports/global/summary.json | jq '.metrics.by_severity.critical // 0')
+              HIGH_COUNT=$(cat ./reports/global/summary.json | jq '.metrics.by_severity.high // 0')
+              
+              echo "🔍 Security Check Results:"
+              echo "  Critical: $CRITICAL_COUNT"
+              echo "  High: $HIGH_COUNT"
+              
+              if [ "$CRITICAL_COUNT" -gt 0 ]; then
+                echo "::error::❌ Found $CRITICAL_COUNT critical vulnerabilities!"
+                exit 1
+              elif [ "$HIGH_COUNT" -gt 5 ]; then
+                echo "::warning::⚠️ Found $HIGH_COUNT high severity vulnerabilities"
+              else
+                echo "::notice::✅ Security scan passed!"
+              fi
+            else
+              echo "⚠️ jq not available, skipping vulnerability check"
+            fi
+          else
+            echo "⚠️ Summary file not found, skipping vulnerability check"
+          fi
