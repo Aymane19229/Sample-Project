@@ -8,10 +8,10 @@ on:
 
 jobs:
   # =========================
-  # Job Security Pipeline
+  # Job SAST
   # =========================
-  security-pipeline:
-    name: Security Pipeline (SAST + DAST + SCA + Parsing)
+  sast:
+    name: Static Analysis (SAST)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -29,33 +29,55 @@ jobs:
       - name: Install dependencies
         run: npm install --legacy-peer-deps
 
-      # =========================
-      # SAST
-      # =========================
       - name: Run npm audit (SAST)
-        run: npm audit --audit-level=moderate --json > audit-report.json || true
+        run: |
+          npm audit --audit-level=moderate --json > audit-report.json || true
 
       - name: Run ESLint
-        run: npx eslint src --ext .js,.jsx -f json -o eslint-report.json || true
+        run: |
+          npx eslint src --ext .js,.jsx -f json -o eslint-report.json || true
 
-      - name: Upload SAST reports
+      - name: Upload SAST npm audit report
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: sast-reports
-          path: |
-            audit-report.json
-            eslint-report.json
+          name: sast-npm-audit
+          path: ./Frontend/audit-report.json
           retention-days: 30
 
-      # =========================
-      # DAST
-      # =========================
+      - name: Upload SAST ESLint report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sast-eslint
+          path: ./Frontend/eslint-report.json
+          retention-days: 30
+
+  # =========================
+  # Job DAST
+  # =========================
+  dast:
+    name: Dynamic Analysis (DAST)
+    runs-on: ubuntu-latest
+    needs: sast
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
       - name: Build and serve frontend
+        working-directory: ./Frontend
         run: |
+          npm install --legacy-peer-deps
           npm run build
           npx serve -s build -l 5000 > serve.log 2>&1 &
           SERVER_PID=$!
+          echo "Server PID: $SERVER_PID"
           sleep 15
           curl -f http://localhost:5000 || echo "❌ Le serveur ne répond pas"
           cat serve.log || echo "Pas de logs"
@@ -87,11 +109,31 @@ jobs:
           path: ./reports/dast/dast-report.json
           retention-days: 30
 
-      # =========================
-      # SCA
-      # =========================
+  # =========================
+  # Job SCA
+  # =========================
+  sca:
+    name: Software Composition Analysis (SCA)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./Frontend
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
+
       - name: Run npm audit (SCA)
-        run: npm audit --json > sca-report.json || true
+        run: |
+          npm audit --json > sca-report.json || true
 
       - name: Upload SCA report
         uses: actions/upload-artifact@v4
@@ -101,67 +143,128 @@ jobs:
           path: ./Frontend/sca-report.json
           retention-days: 30
 
-      # =========================
-      # Merge reports into global JSON
-      # =========================
-      - name: Create fallback reports directories
-        run: mkdir -p reports/{sast,dast,sca,global}
+  # =========================
+  # Job Global Report + Parsing
+  # =========================
+  aggregate-report:
+    name: Aggregate Security Report
+    runs-on: ubuntu-latest
+    needs: [sast, dast, sca]
+    if: always()
 
-      - name: Merge reports
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download SAST npm audit
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: sast-npm-audit
+          path: ./reports/sast
+
+      - name: Download SAST ESLint
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: sast-eslint
+          path: ./reports/sast
+
+      - name: Download DAST
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: dast-report
+          path: ./reports/dast
+
+      - name: Download SCA
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: sca-report
+          path: ./reports/sca
+
+      - name: Create fallback reports
         run: |
-          # Fallback reports
-          cp -f audit-report.json reports/sast/audit-report.json || echo '{"error":"missing"}' > reports/sast/audit-report.json
-          cp -f eslint-report.json reports/sast/eslint-report.json || echo '{"error":"missing"}' > reports/sast/eslint-report.json
-          cp -f reports/dast/dast-report.json reports/dast/dast-report.json || echo '{"status":"failed"}' > reports/dast/dast-report.json
-          cp -f sca-report.json reports/sca/sca-report.json || echo '{"error":"missing"}' > reports/sca/sca-report.json
+          mkdir -p reports/{sast,dast,sca,global}
+          # SAST npm audit fallback
+          if [ ! -f "./reports/sast/audit-report.json" ]; then
+            echo '{"error": "SAST npm audit missing", "status": "failed"}' > ./reports/sast/audit-report.json
+          fi
+          # SAST ESLint fallback
+          if [ ! -f "./reports/sast/eslint-report.json" ]; then
+            echo '{"error": "SAST ESLint missing", "status": "failed"}' > ./reports/sast/eslint-report.json
+          fi
+          # DAST fallback
+          if [ ! -f "./reports/dast/dast-report.json" ]; then
+            echo '{"status": "failed", "message": "DAST report missing"}' > ./reports/dast/dast-report.json
+          fi
+          # SCA fallback
+          if [ ! -f "./reports/sca/sca-report.json" ]; then
+            echo '{"error": "SCA report missing", "status": "failed"}' > ./reports/sca/sca-report.json
+          fi
 
-          # Merge global report
+      - name: Merge reports into global JSON
+        run: |
           jq -s '{
             sast: { npm_audit: .[0], eslint: .[1] },
             dast: .[2],
             sca: .[3],
-            summary: { generated_at: now | strftime("%Y-%m-%d %H:%M:%S"), pipeline_status: "completed" }
+            summary: {
+              generated_at: now | strftime("%Y-%m-%d %H:%M:%S"),
+              pipeline_status: "completed"
+            }
           }' \
-            reports/sast/audit-report.json \
-            reports/sast/eslint-report.json \
-            reports/dast/dast-report.json \
-            reports/sca/sca-report.json \
-            > reports/global/global-report.json
+            ./reports/sast/audit-report.json \
+            ./reports/sast/eslint-report.json \
+            ./reports/dast/dast-report.json \
+            ./reports/sca/sca-report.json \
+            > ./reports/global/global-report.json
 
-      # =========================
-      # Parsing global report
-      # =========================
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: 3.12
-
-      - name: Parse Security Reports
+      - name: Parse Security Reports and generate summary
         run: |
           python - <<'EOF'
           import json, os
+
           path = "reports/global/global-report.json"
           if not os.path.exists(path):
               print("❌ Le fichier global-report.json n'existe pas.")
               exit(1)
+
           with open(path, "r", encoding="utf-8") as f:
               data = json.load(f)
+
           summary = {
               "npm_audit_vuln_count": len(data.get("sast", {}).get("npm_audit", {}).get("vulnerabilities", {})),
               "eslint_error_count": len(data.get("sast", {}).get("eslint", [])),
               "sca_vuln_count": len(data.get("sca", {}).get("vulnerabilities", {})),
               "zap_scan_status": data.get("dast", {}).get("status", "unknown"),
           }
-          critical_vulns = [k for k,v in data.get("sast", {}).get("npm_audit", {}).get("vulnerabilities", {}).items() if v.get("severity")=="critical"]
+
+          critical_vulns = [
+              k for k,v in data.get("sast", {}).get("npm_audit", {}).get("vulnerabilities", {}).items()
+              if v.get("severity") == "critical"
+          ]
           summary["critical_vulnerabilities"] = critical_vulns
+
           os.makedirs("reports/global", exist_ok=True)
           with open("reports/global/summary.json", "w", encoding="utf-8") as f:
               json.dump(summary, f, indent=2, ensure_ascii=False)
+
           print("✅ Résumé généré :", "reports/global/summary.json")
           EOF
 
+      - name: Upload Global Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: global-security-report
+          path: ./reports/global/global-report.json
+          retention-days: 30
+
       - name: Upload Parsed Summary
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: parsed-summary
           path: ./reports/global/summary.json
