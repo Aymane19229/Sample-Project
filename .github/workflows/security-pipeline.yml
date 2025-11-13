@@ -89,7 +89,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: dast-report
-          path: ./zap-report.html
+          path: ./zap_scan.html   # nom correct généré par l’action ZAP
           retention-days: 30
 
   # =========================
@@ -152,7 +152,7 @@ jobs:
       - name: Download DAST
         uses: actions/download-artifact@v4
         with:
-          name: zap_scan
+          name: dast-report
           path: ./reports/dast
 
       - name: Download SCA
@@ -167,7 +167,7 @@ jobs:
           jq -s '{sast_npm_audit: .[0], sast_eslint: .[1], dast: .[2], sca: .[3]}' \
             ./reports/sast/audit-report.json \
             ./reports/sast/eslint-report.json \
-            ./reports/dast/zap-report.html \
+            ./reports/dast/zap_scan.html \
             ./reports/sca/sca-report.json \
             > ./reports/global/global-report.json
 
